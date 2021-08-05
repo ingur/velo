@@ -17,7 +17,7 @@ This is the default project structure handled by our code.
 │   │   ├── video_file.mp4
 │   │   ├── lamppost_data.xlsx
 ├── output
-│   ├── frames
-│   │   ├── City
+│   ├── City
+│   │   ├── frames
 ```
 ___

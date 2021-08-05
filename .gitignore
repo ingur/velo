@@ -1,2 +1,4 @@
-output/frames/*
-input/Amsterdam/*
+output/*
+input/*
+models/*
+.idea/*
