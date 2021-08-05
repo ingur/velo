@@ -1,16 +1,10 @@
 # Velo - Masterchallenge Fietskoerier
 ___
 
-### Example instructions
+### Setup instructions
 
 Install required dependencies
 ```bash
 python -m pip install -r requirements.txt
 ```
-
-Run the script
-```bash
-python main.py
-```
-
 ___
