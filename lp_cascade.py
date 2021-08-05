@@ -4,29 +4,37 @@ import os
 import argparse
 
 parser = argparse.ArgumentParser(description="Apply cascade filter to detect lampposts")
-parser.add_argument("vid_path", type=str, help="path to video file to apply the cascade filter to", default="video/AMSTERDAM_OSV.mp4")
-parser.add_argument("img_path", type=str, help="path to store the individual frames of the video", default="frames/")
-parser.add_argument("cas_path", type=str, help="path to cascade xml file", default="output/")
-parser.add_argument("out_path", type=str, help="path to store ", default="cascade")
-parser.add_argument("save_vid", type=bool, help="whether to save the frames as a video", required=False)
-parser.add_argument("output_vid_name", type=str, help="path and name of output video file", required=False)
-
-# vid_path = "video/AMSTERDAM_OSV.mp4"
-# img_path = "frames/"
-# out_path = "output/"
-# cas_path = "cascade.xml"
-#
-# if not os.path.exists(img_path):
-#     os.mkdir("frames")
-# #
-# # if not os.path.exists(out_path):
-# #     os.mkdir("output")
+parser.add_argument("-vid",
+                    type=str,
+                    help="path to video file to apply the cascade filter to",
+                    default="input/Amsterdam/AMSTERDAM_OSV.mp4",
+                    required=False)
+parser.add_argument("-img",
+                    type=str,
+                    help="path to store the individual frames of the video",
+                    default="output/frames/",
+                    required=False)
+parser.add_argument("-cas",
+                    type=str,
+                    help="path to cascade xml file",
+                    default="models/cascade.xml",
+                    required=False)
 
 
-def frame_extractor(vid_path, sav_path, hop=30):
+def frame_extractor(vid_path: str, img_path: str, hop=30):
     """
     Extracts a video file into its individual frames, each
-    frame is named after the second in which it occurs
+    frame is named after the second in which it occurs and
+    saved to img_path.
+
+    :param vid_path: Path to video file which to extract the frames from
+    :param img_path: Path to save the individual frames to
+    :param hop: the amount of frames to skip between saving
+    :return: None
+    """
+
+
+    """
     vid_path: path to video file to extract
     sav_path: path to save the frames to as images
     hop     : the amount of frames to skip before saving a frame
@@ -49,22 +57,20 @@ def frame_extractor(vid_path, sav_path, hop=30):
             if not state:
                 print(f"Cannot extract frame {i}, exiting")
                 sys.exit()
-            cv.imwrite(f"frames/{round(i / fps)}.jpg", frame)
+            cv.imwrite(f"{img_path}{round(i / fps)}.jpg", frame)
 
     print("Finished splitting frames")
     return
 
 
-def cascader(vid_path: str, img_path: str, cas_path: str, out_path: str, save_video: str = False, out_video_name: str = "output") -> list:
+def cascader(vid_path: str, img_path: str, cas_path: str) -> list:
     """
-    Draws bounding boxes around lamppost from a video file
-    and outputs them as individual frames.
+    Returns the location of detected lampposts in each frame in a
+    (x, y, width, height) format.
+
     :param vid_path: path to video file to draw on
     :param img_path: destination path for the individual frames
     :param cas_path: path to cascade xml file
-    :param out_path: destination path for the drawn frames
-    :param save_video: whether to save the frames as a video file
-    :param out_video_name: name of the output video
     :return: list of lamppost
     """
 
@@ -73,41 +79,34 @@ def cascader(vid_path: str, img_path: str, cas_path: str, out_path: str, save_vi
 
     # load cascade
     lp_cas = cv.CascadeClassifier(cas_path)
+    detected = []
 
     # apply cascade filter to all available frames
     print("Applying cascade filter...")
     for f in os.listdir(img_path):
         frame = cv.imread(img_path + f)
-        lps = lp_cas.detectMultiScale(frame)
+        detected.append(lp_cas.detectMultiScale(frame))
 
-        # continue if no lamp posts are detected in the frame
-        if len(lps) == 0:
-            continue
-
-        # draw the bounding box around the light of the light post
-        for (x, y, w, h) in lps:
-            frame = cv.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 4)
-
-        cv.imwrite(out_path + f, frame)
-
-    if save_video:
-        print("Saving frames as video file...")
-        output_frames = os.listdir(out_path)
-        frame_array = []
-
-        for i in range(len(output_frames)):
-            frame = cv.imread(out_path + output_frames[i])
-            frame_array.append(frame)
-
-        h, w, _ = frame_array[0].shape
-
-        out = cv.VideoWriter(f"{out_video_name}.avi", cv.VideoWriter_fourcc(*'DIVX'), 23.0, (w, h))
-
-        for i in range(len(frame_array)):
-            out.write(frame_array[i])
-
-        out.release()
+    return detected
 
 
 if __name__ == "__main__":
-    cascader(vid_path, img_path, cas_path, out_path)
+    args = parser.parse_args()
+    vid_path = args.vid
+    img_path = args.img
+    cas_path = args.cas
+
+    if not os.path.exists(vid_path):
+        print(f"No video found at {vid_path}, exiting...")
+        sys.exit(1)
+
+    if not os.path.exists(img_path):
+        print(f"{img_path} not found, exiting...")
+        sys.exit(1)
+
+    if not os.path.exists(cas_path):
+        print(f"cascade xml file not found at {cas_path}, exiting...")
+        sys.exit(1)
+
+    lps = cascader(vid_path, img_path, cas_path)
+    print(lps)
