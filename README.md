@@ -10,7 +10,7 @@ python -m pip install -r requirements.txt
 
 ### Project structure
 
-This is the default project structure handled by our code/
+This is the default project structure handled by our code.
 ```bash
 ├── input
 │   ├── City
