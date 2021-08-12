@@ -4,6 +4,9 @@ import cv2 as cv
 import numpy as np
 from lp_cascade import Cascader
 import sys
+import gpxpy
+import pandas as pd
+import math
 
 
 class Lamppost:
@@ -167,7 +170,7 @@ class Lp_container:
         :rtype: Lamppost
         """
 
-        # the max distance in pixels for it to be a valid  match, doesn't work
+        # the max distance in pixels for it to be a valid match, doesn't work
         max_dist = 100000
 
         if len(self.lps) == 0:
@@ -257,6 +260,16 @@ def demo():
     cap = cv.VideoCapture("input/Amsterdam/AMSTERDAM_OSV.mp4")
     idx = 0
 
+    with open("input/Amsterdam/AMSTERDAM_OSV.gpx") as f:
+        gpx = gpxpy.parse(f)
+
+    segments = gpx.tracks[0].segments[0]
+    gps_coords = pd.DataFrame([
+        {'lat': p.latitude,
+         'lon': p.longitude,
+         'ele': p.elevation,
+         'time': p.time} for p in segments.points])
+
     while True:
         _, frame = cap.read()
         if idx % 30 == 0:
@@ -284,10 +297,24 @@ def demo():
             frame = cv.putText(frame,
                                text=f"id:{lp.get_id()}",
                                org=lp.get_coor(),
-                               fontFace=2,
+                               fontFace=0,
                                fontScale=1,
                                color=lp.get_color(),
                                thickness=3)
+        frame = cv.putText(frame,
+                           text=f"lat: {gps_coords.lat[math.floor(idx/24)]}",
+                           org=(1500, 1040),
+                           fontFace=0,
+                           fontScale=1,
+                           color=(255, 255, 255),
+                           thickness=2)
+        frame = cv.putText(frame,
+                           text=f"lon: {gps_coords.lon[math.floor(idx / 24)]}",
+                           org=(1500, 1070),
+                           fontFace=0,
+                           fontScale=1,
+                           color=(255, 255, 255),
+                           thickness=2)
 
         cv.imshow("tracking", frame)
         k = cv.waitKey(1)
