@@ -5,21 +5,23 @@ import imutils
 import numpy as np
 from lp_cascade import Cascader
 import sys
-import gpxpy
-import pandas as pd
-import math
-from imutils import contours
-from skimage import measure
+# import gpxpy
+# import pandas as pd
+# import math
+# from imutils import contours
+# from skimage import measure
 import random as rng
 
 cv2 = cv
 
-cap = cv.VideoCapture("input/Amsterdam/AMSTERDAM_OSV.mp4")
+cap = cv.VideoCapture("input/Amsterdam/short.mp4")
 idx = 0
 
 filterSize =(3, 3)
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
                                    filterSize)
+
+
 
 while True:
     _, im = cap.read()
@@ -34,7 +36,8 @@ while True:
         # cv.imshow("AAAAAAAA", img)
 
         perc = 0.01
-        hist = cv.calcHist([img], [0], None, [256], [0, 256]).flatten()
+        hist = cv.calcHist([img[:324]], [0], None, [256], [0, 256]).flatten()
+
 
         total = img.shape[0] * img.shape[1]
         target = perc * total
@@ -90,14 +93,19 @@ while True:
             boundRect[i] = cv.boundingRect(contours_poly[i])
             centers[i], radius[i] = cv.minEnclosingCircle(contours_poly[i])
 
-        for i in range(len(contours[:1])):
+        for i in range(len(contours)):
             color = (rng.randint(0,256), rng.randint(0,256), rng.randint(0,256))
             color = (0, 255, 0)
             if centers[i][1] <= 0.3 * 1080 and radius[i] < 100:
-                cv.rectangle(im, (int(boundRect[i][0]), int(boundRect[i][1])), \
-                             (int(boundRect[i][0]+boundRect[i][2]), int(boundRect[i][1]+boundRect[i][3])), color, 2)
-                # cv.circle(im, (int(centers[i][0]), int(centers[i][1])), int(radius[i]), color, 2)
+                #cv.rectangle(im, (int(boundRect[i][0]), int(boundRect[i][1])), \
+                 #            (int(boundRect[i][0]+boundRect[i][2]), int(boundRect[i][1]+boundRect[i][3])), color, 2)
+                cv.circle(im, (int(centers[i][0]), int(centers[i][1])), int(radius[i]), color, 2)
         cv.imshow("oek", im)
+
+
+
+
+
 
 
 
@@ -171,7 +179,7 @@ while True:
         # # print(np.amax(dist_transform))
         # cv.imshow("XD", im)
 
-    k = cv.waitKey(1)
+    k = cv.waitKey(0)
 
     if k == ord("q"):
         cv.destroyWindow("tracking")
