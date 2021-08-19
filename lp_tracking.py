@@ -156,21 +156,24 @@ class Lamppost:
         # print(success)
         return success
 
-    def get_angle(self) -> float:
+    def get_angle(self) -> tuple:
         """
         Returns the angle between camera and lamppost in radians according to
-        the x coordinate of the bounding box.
+        the x and y coordinates  of the bounding box.
 
         formula: result = ((x - minX) / (maxX - minX)) * (maxFOV - minFOV) + minFOV
 
-        :return: angle between camera in lamppost in radians
-        :rtype: float
+        :return: angle between camera in lamppost in radians in (x, y) format
+        :rtype: tuple
         """
 
-        deg = ((self.x + (self.w * 0.5)) / 1920) * 60 - 30
-        rad = deg * DEG2RAD
-        self.rads.append(rad)
-        return rad
+        deg_x = ((self.x + (self.w * 0.5)) / 1920) * 90.9 - 45.45
+        deg_y = (((1080 - self.y) - (self.h * 0.5)) / 1080) * 53.6 - 26.8
+        print(deg_y)
+        rad_x = deg_x * DEG2RAD
+        rad_y = deg_y * DEG2RAD
+        self.rads.append((rad_x, rad_y))
+        return rad_x, rad_y
 
     def add_loc(self, gps: tuple):
         """
@@ -181,6 +184,33 @@ class Lamppost:
         """
         self.locs.append(gps)
 
+    # def intersect(self) -> np.ndarray:
+    #     """
+    #     Calculate the least squares solution of the point closest
+    #     to all lines defined by the gps positions and the angles
+    #     to the lamppost. https://stackoverflow.com/a/52089867
+    #
+    #     :return: point of (nearest) intersection
+    #     :rtype: np.ndarray
+    #     """
+    #     if len(self.locs) < 2:
+    #         return (np.array([]), np.array([]))
+    #
+    #     points = np.asarray(self.locs)
+    #
+    #     dir_vectors = np.asarray([[math.cos(rad[0]), math.sin(rad[0])] for rad in self.rads])
+    #     self.uv = dir_vectors / np.sqrt((dir_vectors ** 2).sum(-1))[..., np.newaxis]
+    #
+    #     projs = np.eye(self.uv.shape[1]) - self.uv[:, :, np.newaxis] * self.uv[:, np.newaxis]  # I - n*n.T
+    #
+    #     R = projs.sum(axis=0)
+    #     q = (projs @ points[:, :, np.newaxis]).sum(axis=0)
+    #
+    #     print(np.linalg.lstsq(R, q, rcond=-1))
+    #     p = np.linalg.lstsq(R, q, rcond=-1)[0]
+    #
+    #     return p
+
     def intersect(self) -> np.ndarray:
         """
         Calculate the least squares solution of the point closest
@@ -190,21 +220,26 @@ class Lamppost:
         :return: point of (nearest) intersection
         :rtype: np.ndarray
         """
-        dir_vectors = np.asarray([[math.cos(rad), math.sin(rad)] for rad in self.rads])
-        self.uv = dir_vectors / np.sqrt((dir_vectors ** 2).sum(-1))[..., np.newaxis]
 
         if len(self.locs) < 2:
-            return (np.array([]), np.array([]))
+            return (np.array([]), np.array([]), np.array([]))
 
         points = np.asarray(self.locs)
+
+        # dir_vectors = np.asarray([[math.cos(rad[0])*math.cos(rad[1]), math.sin(rad[0]) * math.cos(rad[1])] for rad in self.rads])
+        dir_vectors = np.asarray([[math.cos(rad[0]) * math.cos(rad[1]), math.sin(rad[0]) * math.cos(rad[1]), math.sin(rad[1])] for rad in self.rads])
+        # print(dir_vectors[0])
+        self.uv = dir_vectors / np.sqrt((dir_vectors ** 2).sum(-1))[..., np.newaxis]
+        # print(self.uv[0])
 
         projs = np.eye(self.uv.shape[1]) - self.uv[:, :, np.newaxis] * self.uv[:, np.newaxis]  # I - n*n.T
 
         R = projs.sum(axis=0)
         q = (projs @ points[:, :, np.newaxis]).sum(axis=0)
 
+        # print(np.linalg.lstsq(R, q, rcond=-1))
         p = np.linalg.lstsq(R, q, rcond=-1)[0]
-
+        print(p)
         return p
 
     def calc_dist(self) -> float:
@@ -522,9 +557,10 @@ def demo():
 
     figure, ax = plt.subplots(figsize=(8, 6))
 
+    rdy = 1.2
     while True:
         _, frame = cap.read()
-        rdx, rdy = wgs_to_rd(lats[idx % 24], lons[idx % 24])
+        rdx, rdz = wgs_to_rd(lats[idx % 24], lons[idx % 24])
         if idx % 24 == 0:
             lp_coors = cas.cascade_frame(frame)
             # lp_coors = detect_frame(frame)
@@ -535,11 +571,11 @@ def demo():
                 match = lp_container.find_matching_lp((x, y))
 
                 if not match:
-                    lp = Lamppost(x, y, w, h, next(id_gen), color_gen(), frame, (rdx, rdy))
+                    lp = Lamppost(x, y, w, h, next(id_gen), color_gen(), frame, (rdx, rdz, rdy))
                     lp_container.add_lp(lp)
                 else:
                     match.update_bbox(x, y, w, h)
-                    match.add_loc((rdx, rdy))
+                    match.add_loc((rdx, rdz, rdy))
                     match.get_angle()
         else:
             for lp in lp_container.get_lps():
@@ -548,7 +584,7 @@ def demo():
                     lp.inc_decay()
                 else:
                     lp_container.find_matching_lp(lp.get_coor())
-                lp.add_loc((rdx, rdy))
+                lp.add_loc((rdx, rdz, rdy))
                 lp.get_angle()
 
         for lp in lp_container.get_lps():
@@ -561,14 +597,14 @@ def demo():
                                fontScale=1,
                                color=lp.get_color(),
                                thickness=3)
-            lp_rdx, lp_rdy = lp.intersect()
-            print(lp_rdx, lp_rdy)
+            lp_rdx, lp_rdz, lp_rdy = lp.intersect()
+            # print(lp_rdx, lp_rdy)
 
             if lp_rdx.size == 0:
                 continue
 
             # dist = haversine(lons[idx % 24], lats[idx % 24], lon2, lat2)
-            dist = round(np.sqrt((lp_rdx - rdx)**2 + (lp_rdy - rdy)**2)[0] / 10, 2)
+            dist = round(np.sqrt((lp_rdx - rdx)**2 + (lp_rdz - rdz)**2 + (lp_rdy - rdy)**2)[0] / 10, 2)
             frame = cv.putText(frame,
                                text=f"dist: {dist}",
                                org=lp.get_dist_loc(),
