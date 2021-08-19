@@ -2,7 +2,7 @@ import math
 import os
 import random as rng
 import sys
-from typing import Iterator
+
 
 import cv2 as cv
 import gpxpy
@@ -11,8 +11,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from lp_cascade import Cascader
+from utils import number_gen, color_gen, wgs_to_rd, detect_frame
 
 DEG2RAD = math.pi / 180
+RAD2DEG = 180 / math.pi
+X0 = 155000
+Y0 = 463000
+PHI0 = 52.15517440
+LAM0 = 5.38720621
 
 
 class Lamppost:
@@ -20,7 +26,7 @@ class Lamppost:
     Class for tracking lampposts.
     """
 
-    def __init__(self, x: int, y: int, w: int, h: int, lp_id: int, color: tuple, frame: np.ndarray, gps: tuple):
+    def __init__(self, x: int, y: int, w: int, h: int, lp_id: int, color: tuple, frame: np.ndarray, gps: tuple, bearing):
         """
         Constructor method.
 
@@ -45,10 +51,10 @@ class Lamppost:
         # real world coordinates where this lamppost will be detected
         self.locs = [gps]
         # angles between camera and lamppost during detection
+
         self.rads = []
-        self.get_angle()
+        self.get_angle(bearing)
         self.uv = None
-        self.intersect()
 
         self.tracker = cv.TrackerKCF_create()
         self.tracker.init(frame, (x, y, w, h))
@@ -133,6 +139,7 @@ class Lamppost:
         """
         Resets the decay of lamppost.
         """
+
         self.decay = 0
 
     def inc_decay(self):
@@ -153,7 +160,6 @@ class Lamppost:
         success, (x, y, w, h) = self.tracker.update(frame)
         if success:
             self.update_bbox(x, y, w, h)
-        # print(success)
         return success
 
     def get_angle(self) -> tuple:
@@ -166,14 +172,12 @@ class Lamppost:
         :return: angle between camera in lamppost in radians in (x, y) format
         :rtype: tuple
         """
-
-        deg_x = ((self.x + (self.w * 0.5)) / 1920) * 90.9 - 45.45
-        deg_y = (((1080 - self.y) - (self.h * 0.5)) / 1080) * 53.6 - 26.8
-        print(deg_y)
-        rad_x = deg_x * DEG2RAD
-        rad_y = deg_y * DEG2RAD
-        self.rads.append((rad_x, rad_y))
-        return rad_x, rad_y
+        deg_alpha = bearing - ((self.x + (self.w * 0.5)) / 1920) * 62.8 - 31.9
+        deg_beta = (((1080 - self.y) + (self.h * 0.5)) / 1080) * 36.2 - 18.1
+        alpha = deg_alpha * DEG2RAD
+        beta = deg_beta * DEG2RAD
+        self.rads.append((alpha, beta))
+        return alpha, beta
 
     def add_loc(self, gps: tuple):
         """
@@ -182,34 +186,8 @@ class Lamppost:
 
         :param gps: gps coordinate (latitude, longitude)
         """
-        self.locs.append(gps)
 
-    # def intersect(self) -> np.ndarray:
-    #     """
-    #     Calculate the least squares solution of the point closest
-    #     to all lines defined by the gps positions and the angles
-    #     to the lamppost. https://stackoverflow.com/a/52089867
-    #
-    #     :return: point of (nearest) intersection
-    #     :rtype: np.ndarray
-    #     """
-    #     if len(self.locs) < 2:
-    #         return (np.array([]), np.array([]))
-    #
-    #     points = np.asarray(self.locs)
-    #
-    #     dir_vectors = np.asarray([[math.cos(rad[0]), math.sin(rad[0])] for rad in self.rads])
-    #     self.uv = dir_vectors / np.sqrt((dir_vectors ** 2).sum(-1))[..., np.newaxis]
-    #
-    #     projs = np.eye(self.uv.shape[1]) - self.uv[:, :, np.newaxis] * self.uv[:, np.newaxis]  # I - n*n.T
-    #
-    #     R = projs.sum(axis=0)
-    #     q = (projs @ points[:, :, np.newaxis]).sum(axis=0)
-    #
-    #     print(np.linalg.lstsq(R, q, rcond=-1))
-    #     p = np.linalg.lstsq(R, q, rcond=-1)[0]
-    #
-    #     return p
+        self.locs.append(gps)
 
     def intersect(self) -> np.ndarray:
         """
@@ -220,45 +198,85 @@ class Lamppost:
         :return: point of (nearest) intersection
         :rtype: np.ndarray
         """
+        print(self.get_id())
 
         if len(self.locs) < 2:
-            return (np.array([]), np.array([]), np.array([]))
+            return np.array([[np.nan], [np.nan], [np.nan]])
 
         points = np.asarray(self.locs)
 
-        # dir_vectors = np.asarray([[math.cos(rad[0])*math.cos(rad[1]), math.sin(rad[0]) * math.cos(rad[1])] for rad in self.rads])
-        dir_vectors = np.asarray([[math.cos(rad[0]) * math.cos(rad[1]), math.sin(rad[0]) * math.cos(rad[1]), math.sin(rad[1])] for rad in self.rads])
-        # print(dir_vectors[0])
-        self.uv = dir_vectors / np.sqrt((dir_vectors ** 2).sum(-1))[..., np.newaxis]
-        # print(self.uv[0])
 
-        projs = np.eye(self.uv.shape[1]) - self.uv[:, :, np.newaxis] * self.uv[:, np.newaxis]  # I - n*n.T
+        dir_vector = np.asarray([[math.cos(alpha) * math.cos(beta),
+                                  math.sin(alpha) * math.cos(beta),
+                                  math.sin(beta)] for alpha, beta in self.rads])
+
+        self.uv = dir_vector / np.sqrt((dir_vector ** 2).sum(-1))[..., np.newaxis]
+
+        projs = np.eye(self.uv.shape[1]) - self.uv[:, :, np.newaxis] * self.uv[:, np.newaxis]
 
         R = projs.sum(axis=0)
         q = (projs @ points[:, :, np.newaxis]).sum(axis=0)
 
-        # print(np.linalg.lstsq(R, q, rcond=-1))
-        p = np.linalg.lstsq(R, q, rcond=-1)[0]
-        print(p)
+        ls = np.linalg.lstsq(R, q, rcond=-1)
+        p = ls[0]
+        self.point_line_distance(p)
         return p
 
-    def calc_dist(self) -> float:
-        """
-        Given two or more angles and gps coordinates, calculate
-        the vectors belonging to each angle and their intersection
+    def point_line_distance(self, point):
+        point = np.reshape(point, (1, 3))
+        P0 = np.asarray(self.locs)
+        P1 = P0 + self.uv
+        dist = 0
 
-        :return: distance to lamppost
-        """
+        for i in range(len(P0)):
+            d = np.reshape((P1[i] - P0[i]) / np.linalg.norm(P1[i] - P0[i]), (3))
+            v = np.reshape(point - P0[i], (3))
+            t = np.dot(v, d.T)
+            P = P0[i] + np.dot(t, d.T)
+            dist += np.linalg.norm(P - point)
+        print(dist / len(P0))
+        print()
 
-        if len(self.locs) < 2:
-            return np.inf
 
-        dir_vectors = np.asarray([[math.cos(rad), math.sin(rad)] for rad in self.rads])
-        uni_vectors = dir_vectors / np.sqrt((dir_vectors ** 2).sum(-1))[..., np.newaxis]
-        org_vectors = np.asarray(self.locs)
 
-        proj = np.eye(2) - uni_vectors[:, np.newaxis]
 
+
+    # def intersect(self):
+    #     """P0 and P1 are NxD arrays defining N lines.
+    #     D is the dimension of the space. This function
+    #     returns the least squares intersection of the N
+    #     lines from the system given by eq. 13 in
+    #     http://cal.cs.illinois.edu/~johannes/research/LS_line_intersect.pdf.
+    #     """
+    #     # generate all line direction vectors
+    #
+    #     if len(self.locs) < 2:
+    #         return np.array([[np.nan], [np.nan], [np.nan]])
+    #
+    #     dir_vector = np.asarray([[math.cos(alpha) * math.cos(beta),
+    #                               math.sin(alpha) * math.cos(beta),
+    #                               math.sin(beta)] for alpha, beta in self.rads])
+    #
+    #     self.uv = dir_vector / np.sqrt((dir_vector ** 2).sum(-1))[..., np.newaxis]
+    #
+    #     P0 = np.asarray(self.locs)
+    #     P1 = P0 + self.uv
+    #     n = (P1-P0)/np.linalg.norm(P1-P0,axis=1)[:,np.newaxis] # normalized
+    #
+    #     # generate the array of all projectors
+    #     projs = np.eye(n.shape[1]) - n[:,:,np.newaxis]*n[:,np.newaxis]  # I - n*n.T
+    #     # see fig. 1
+    #
+    #     # generate R matrix and q vector
+    #     R = projs.sum(axis=0)
+    #     q = (projs @ P0[:,:,np.newaxis]).sum(axis=0)
+    #
+    #     # solve the least squares problem for the
+    #     # intersection point p: Rp = q
+    #     p = np.linalg.lstsq(R,q,rcond=None)[0]
+    #     print(p)
+    #
+    #     return p
 
 class Lp_container:
     """
@@ -281,6 +299,7 @@ class Lp_container:
 
         :param lp: lamppost to add
         """
+
         self.lps.append(lp)
 
     def find_matching_lp(self, det_lp: tuple) -> Lamppost:
@@ -339,6 +358,7 @@ class Lp_container:
         :return: list with lampposts
         :rtype: list
         """
+
         return self.lps
 
     def del_lp(self, lp: Lamppost):
@@ -351,196 +371,11 @@ class Lp_container:
         self.lps.remove(lp)
 
 
-def number_gen() -> Iterator[int]:
-    """
-    Natural number generator
-
-    :return: the next integer in the sequence of natural numbers
-    :rtype: Iterator[int]
-    """
-    num = 0
-    while True:
-        yield num
-        num += 1
-
-
-def color_gen() -> tuple:
-    """
-    Random (r,g,b) color generator
-
-    :return: tuple of (r,g,b)
-    :rtype: tuple
-    """
-    return tuple(np.random.choice(range(256), size=3).tolist())
-
-
-def haversine(lon1, lat1, lon2, lat2):
-    """
-    Calculate the great circle distance between two points
-    on the earth (specified in decimal degrees)
-    """
-    # convert decimal degrees to radians
-    lon1, lat1, lon2, lat2 = map(math.radians, [lon1, lat1, lon2, lat2])
-
-    # haversine formula
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    c = 2 * math.asin(math.sqrt(a))
-    r = 6372.8  # Radius of earth in kilometers.
-    return c * r * 1000
-
-cv2 = cv
-
-X0 = 155000
-Y0 = 463000
-PHI0 = 52.15517440
-LAM0 = 5.38720621
-
-
-def rd_to_wgs(x, y):
-    """
-    Convert rijksdriehoekcoordinates into WGS84 coordinates. Input parameters: x (float), y (float).
-    """
-
-    if isinstance(x, (list, tuple)):
-        x, y = x
-
-    pqk = [(0, 1, 3235.65389),
-           (2, 0, -32.58297),
-           (0, 2, -0.24750),
-           (2, 1, -0.84978),
-           (0, 3, -0.06550),
-           (2, 2, -0.01709),
-           (1, 0, -0.00738),
-           (4, 0, 0.00530),
-           (2, 3, -0.00039),
-           (4, 1, 0.00033),
-           (1, 1, -0.00012)]
-
-    pql = [(1, 0, 5260.52916),
-           (1, 1, 105.94684),
-           (1, 2, 2.45656),
-           (3, 0, -0.81885),
-           (1, 3, 0.05594),
-           (3, 1, -0.05607),
-           (0, 1, 0.01199),
-           (3, 2, -0.00256),
-           (1, 4, 0.00128),
-           (0, 2, 0.00022),
-           (2, 0, -0.00022),
-           (5, 0, 0.00026)]
-
-    dx = 1E-5 * (x - X0)
-    dy = 1E-5 * (y - Y0)
-
-    phi = PHI0
-    lam = LAM0
-
-    for p, q, k in pqk:
-        phi += k * dx ** p * dy ** q / 3600
-
-    for p, q, l in pql:
-        lam += l * dx ** p * dy ** q / 3600
-
-    return [phi, lam]
-
-
-def wgs_to_rd(phi, lam):
-    """
-    Convert WGS84 coordinates into rijksdriehoekcoordinates. Input parameters: phi (float), lambda (float).
-    """
-
-    pqr = [(0, 1, 190094.945),
-           (1, 1, -11832.228),
-           (2, 1, -114.221),
-           (0, 3, -32.391),
-           (1, 0, -0.705),
-           (3, 1, -2.34),
-           (1, 3, -0.608),
-           (0, 2, -0.008),
-           (2, 3, 0.148)]
-
-    pqs = [(1, 0, 309056.544),
-           (0, 2, 3638.893),
-           (2, 0, 73.077),
-           (1, 2, -157.984),
-           (3, 0, 59.788),
-           (0, 1, 0.433),
-           (2, 2, -6.439),
-           (1, 1, -0.032),
-           (0, 4, 0.092),
-           (1, 4, -0.054)]
-
-    dphi = 0.36 * (phi - PHI0)
-    dlam = 0.36 * (lam - LAM0)
-
-    X = X0
-    Y = Y0
-
-    for p, q, r in pqr:
-        X += r * dphi ** p * dlam ** q
-
-    for p, q, s in pqs:
-        Y += s * dphi ** p * dlam ** q
-
-    return [X, Y]
-
-
-def detect_frame(im):
-    img = cv.cvtColor(im, cv.COLOR_BGR2GRAY)
-    img = cv.medianBlur(img, 5)
-    kernel = np.ones((12, 12), np.uint8)
-    img = cv.erode(img, kernel, iterations=3)
-    img = cv.dilate(img, kernel, iterations=3)
-
-    # cv.imshow("AAAAAAAA", img)
-
-    perc = 0.01
-    hist = cv.calcHist([img[:324]], [0], None, [256], [0, 256]).flatten()
-
-    total = img.shape[0] * img.shape[1]
-    target = perc * total
-    # print(target)
-    summed = 0
-    thresh = 0
-    for i in range(255, 0, -1):
-        summed += int(hist[i])
-        if summed >= target:
-            thresh = i
-            break
-
-    ret = cv.threshold(img, thresh < 255 and thresh or 254, 0, cv.THRESH_TOZERO)[1]
-
-    contours = cv2.findContours(ret[:, :960], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = contours[0] if len(contours) == 2 else contours[1]
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-    contours_poly = [None] * len(contours)
-    boundRect = [None] * len(contours)
-    centers = [None] * len(contours)
-    radius = [None] * len(contours)
-    for i, c in enumerate(contours):
-        contours_poly[i] = cv.approxPolyDP(c, 3, True)
-        boundRect[i] = cv.boundingRect(contours_poly[i])
-        centers[i], radius[i] = cv.minEnclosingCircle(contours_poly[i])
-
-    for i in range(len(contours)):
-        color = (rng.randint(0, 256), rng.randint(0, 256), rng.randint(0, 256))
-        color = (0, 255, 0)
-        if centers[i][1] <= 0.3 * 1080 and radius[i] < 100:
-            cv.rectangle(im, (int(boundRect[i][0]), int(boundRect[i][1])),
-                         (int(boundRect[i][0] + boundRect[i][2]), int(boundRect[i][1] + boundRect[i][3])), color, 2)
-
-    return boundRect
-
-
 def demo():
     lp_container = Lp_container()
     cas = Cascader("models/cascade.xml")
     id_gen = number_gen()
     cap = cv.VideoCapture("input/Amsterdam/AMSTERDAM_OSV.mp4")
-    idx = 0
 
     with open("input/Amsterdam/AMSTERDAM_OSV.gpx") as f:
         gpx = gpxpy.parse(f)
@@ -552,40 +387,55 @@ def demo():
          'ele': p.elevation,
          'time': p.time} for p in segments.points])
 
-    lats = [gps_coords.lat[0]]
-    lons = [gps_coords.lon[0]]
+    lats = [gps_coords.lat[0], gps_coords.lat[1]]
+    lons = [gps_coords.lon[0], gps_coords.lon[1]]
 
-    figure, ax = plt.subplots(figsize=(8, 6))
-
+    # estimated height of the camera on the bike in meter
     rdy = 1.2
+
+    idx = 0
     while True:
         _, frame = cap.read()
         rdx, rdz = wgs_to_rd(lats[idx % 24], lons[idx % 24])
+
         if idx % 24 == 0:
             lp_coors = cas.cascade_frame(frame)
             # lp_coors = detect_frame(frame)
+
+            # interpolate the coordinates between two data-points
             lats = np.linspace(gps_coords.lat[math.floor(idx / 24)], gps_coords.lat[math.floor(idx / 24 + 1)], num=24)
             lons = np.linspace(gps_coords.lon[math.floor(idx / 24)], gps_coords.lon[math.floor(idx / 24 + 1)], num=24)
+
+            p0 = wgs_to_rd(lats[0],  lons[0])
+            p1 = wgs_to_rd(lats[-1], lons[-1])
+            d = round(np.sqrt((p1[1] - p0[1])**2 + (p1[0] - p0[0])**2))
+            # print("m/s:", d)
+            bearing = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+            bearing = bearing * RAD2DEG
 
             for x, y, w, h in lp_coors:
                 match = lp_container.find_matching_lp((x, y))
 
                 if not match:
-                    lp = Lamppost(x, y, w, h, next(id_gen), color_gen(), frame, (rdx, rdz, rdy))
+                    lp = Lamppost(x, y, w, h, next(id_gen), color_gen(), frame, (rdx, rdz, rdy), bearing)
                     lp_container.add_lp(lp)
+
                 else:
                     match.update_bbox(x, y, w, h)
                     match.add_loc((rdx, rdz, rdy))
-                    match.get_angle()
+                    match.get_angle(bearing)
+
         else:
             for lp in lp_container.get_lps():
                 if not lp.tracker_update(frame):
                     # lp_container.del_lp(lp)
                     lp.inc_decay()
+
                 else:
                     lp_container.find_matching_lp(lp.get_coor())
+
                 lp.add_loc((rdx, rdz, rdy))
-                lp.get_angle()
+                lp.get_angle(bearing)
 
         for lp in lp_container.get_lps():
             p0, p1 = lp.get_bbox()
@@ -597,14 +447,13 @@ def demo():
                                fontScale=1,
                                color=lp.get_color(),
                                thickness=3)
-            lp_rdx, lp_rdz, lp_rdy = lp.intersect()
-            # print(lp_rdx, lp_rdy)
 
-            if lp_rdx.size == 0:
+            lp_rdx, lp_rdz, lp_rdy = lp.intersect()
+
+            if np.isnan(lp_rdx):
                 continue
 
-            # dist = haversine(lons[idx % 24], lats[idx % 24], lon2, lat2)
-            dist = round(np.sqrt((lp_rdx - rdx)**2 + (lp_rdz - rdz)**2 + (lp_rdy - rdy)**2)[0] / 10, 2)
+            dist = round(np.sqrt((lp_rdx - rdx) ** 2 + (lp_rdz - rdz) ** 2 + (lp_rdy - rdy) ** 2)[0] / 10, 2)
             frame = cv.putText(frame,
                                text=f"dist: {dist}",
                                org=lp.get_dist_loc(),
@@ -628,20 +477,14 @@ def demo():
                            color=(255, 255, 255),
                            thickness=2)
 
-        # frame = cv.line(frame, (960, 0), (960, 1080), (255, 255, 255), 5)
         cv.imshow("tracking", frame)
-        # print(lp_container.get_lps()[0].uv)
-        # quiv = ax.quiver(lp_container.get_lps()[0].locs,lp_container.get_lps()[0].uv )
-        # figure.canvas.draw()
         k = cv.waitKey(0)
-        # figure.canvas.flush_events()
 
         if k == ord("q"):
             cv.destroyWindow("tracking")
             sys.exit(0)
 
         lp_container.apply_decay()
-        # print([(lp.get_id(), lp.get_decay()) for lp in lp_container.get_lps()])
         idx += 1
 
 
