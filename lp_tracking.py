@@ -172,8 +172,8 @@ class Lamppost:
         :return: angle between camera in lamppost in radians in (x, y) format
         :rtype: tuple
         """
-        deg_alpha = bearing - ((self.x + (self.w * 0.5)) / 1920) * 62.8 - 31.9
-        deg_beta = (((1080 - self.y) + (self.h * 0.5)) / 1080) * 36.2 - 18.1
+        deg_alpha = bearing - ((self.x + (self.w * 0.5)) / 1920) * 90.9 - 45.45
+        deg_beta = (((1080 - self.y) + (self.h * 0.5)) / 1080) * 53.6 - 26.8
         alpha = deg_alpha * DEG2RAD
         beta = deg_beta * DEG2RAD
         self.rads.append((alpha, beta))
@@ -198,13 +198,12 @@ class Lamppost:
         :return: point of (nearest) intersection
         :rtype: np.ndarray
         """
-        print(self.get_id())
+        # print(self.get_id())
 
         if len(self.locs) < 2:
             return np.array([[np.nan], [np.nan], [np.nan]])
 
         points = np.asarray(self.locs)
-
 
         dir_vector = np.asarray([[math.cos(alpha) * math.cos(beta),
                                   math.sin(alpha) * math.cos(beta),
@@ -217,9 +216,10 @@ class Lamppost:
         R = projs.sum(axis=0)
         q = (projs @ points[:, :, np.newaxis]).sum(axis=0)
 
-        ls = np.linalg.lstsq(R, q, rcond=-1)
+        ls = np.linalg.lstsq(R, q, rcond=None)
         p = ls[0]
-        self.point_line_distance(p)
+        # self.point_line_distance(p)
+        # print(p)
         return p
 
     def point_line_distance(self, point):
@@ -237,46 +237,6 @@ class Lamppost:
         print(dist / len(P0))
         print()
 
-
-
-
-
-    # def intersect(self):
-    #     """P0 and P1 are NxD arrays defining N lines.
-    #     D is the dimension of the space. This function
-    #     returns the least squares intersection of the N
-    #     lines from the system given by eq. 13 in
-    #     http://cal.cs.illinois.edu/~johannes/research/LS_line_intersect.pdf.
-    #     """
-    #     # generate all line direction vectors
-    #
-    #     if len(self.locs) < 2:
-    #         return np.array([[np.nan], [np.nan], [np.nan]])
-    #
-    #     dir_vector = np.asarray([[math.cos(alpha) * math.cos(beta),
-    #                               math.sin(alpha) * math.cos(beta),
-    #                               math.sin(beta)] for alpha, beta in self.rads])
-    #
-    #     self.uv = dir_vector / np.sqrt((dir_vector ** 2).sum(-1))[..., np.newaxis]
-    #
-    #     P0 = np.asarray(self.locs)
-    #     P1 = P0 + self.uv
-    #     n = (P1-P0)/np.linalg.norm(P1-P0,axis=1)[:,np.newaxis] # normalized
-    #
-    #     # generate the array of all projectors
-    #     projs = np.eye(n.shape[1]) - n[:,:,np.newaxis]*n[:,np.newaxis]  # I - n*n.T
-    #     # see fig. 1
-    #
-    #     # generate R matrix and q vector
-    #     R = projs.sum(axis=0)
-    #     q = (projs @ P0[:,:,np.newaxis]).sum(axis=0)
-    #
-    #     # solve the least squares problem for the
-    #     # intersection point p: Rp = q
-    #     p = np.linalg.lstsq(R,q,rcond=None)[0]
-    #     print(p)
-    #
-    #     return p
 
 class Lp_container:
     """
@@ -387,13 +347,16 @@ def demo():
          'ele': p.elevation,
          'time': p.time} for p in segments.points])
 
-    lats = [gps_coords.lat[0], gps_coords.lat[1]]
-    lons = [gps_coords.lon[0], gps_coords.lon[1]]
-
     # estimated height of the camera on the bike in meter
     rdy = 1.2
+    fps = 24
+    start = 240
 
-    idx = 0
+    lats = [gps_coords.lat[start], gps_coords.lat[start + 1]]
+    lons = [gps_coords.lon[start], gps_coords.lon[start + 1]]
+
+    cap.set(cv.CAP_PROP_POS_FRAMES, start * fps)
+    idx = start * fps
     while True:
         _, frame = cap.read()
         rdx, rdz = wgs_to_rd(lats[idx % 24], lons[idx % 24])
@@ -453,7 +416,7 @@ def demo():
             if np.isnan(lp_rdx):
                 continue
 
-            dist = round(np.sqrt((lp_rdx - rdx) ** 2 + (lp_rdz - rdz) ** 2 + (lp_rdy - rdy) ** 2)[0] / 10, 2)
+            dist = round(np.sqrt((lp_rdx - rdx) ** 2 + (lp_rdz - rdz) ** 2)[0] / 10, 2)
             frame = cv.putText(frame,
                                text=f"dist: {dist}",
                                org=lp.get_dist_loc(),
