@@ -1,24 +1,19 @@
 import math
-import os
-import random as rng
 import sys
-
+from types import FunctionType
 
 import cv2 as cv
 import gpxpy
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from scipy.spatial.distance import cdist
 
 from lp_cascade import Cascader
-from utils import number_gen, color_gen, wgs_to_rd, detect_frame
+from utils import number_gen, color_gen, wgs_to_rd, rd_to_wgs
 
 DEG2RAD = math.pi / 180
 RAD2DEG = 180 / math.pi
-X0 = 155000
-Y0 = 463000
-PHI0 = 52.15517440
-LAM0 = 5.38720621
 
 
 class Lamppost:
@@ -26,7 +21,8 @@ class Lamppost:
     Class for tracking lampposts.
     """
 
-    def __init__(self, x: int, y: int, w: int, h: int, lp_id: int, color: tuple, frame: np.ndarray, gps: tuple, bearing):
+    def __init__(self, x: int, y: int, w: int, h: int, lp_id: int, color: tuple, frame: np.ndarray, gps: tuple,
+                 bearing):
         """
         Constructor method.
 
@@ -37,6 +33,7 @@ class Lamppost:
         :param lp_id: id of lamppost
         :param color: color of its bounding box in (r,g,b) format
         :param frame: frame in which the lamppost was found
+        :param bearing: initial bearing of the camera in degrees
         """
 
         self.x = x
@@ -51,10 +48,8 @@ class Lamppost:
         # real world coordinates where this lamppost will be detected
         self.locs = [gps]
         # angles between camera and lamppost during detection
-
         self.rads = []
         self.get_angle(bearing)
-        self.uv = None
 
         self.tracker = cv.TrackerKCF_create()
         self.tracker.init(frame, (x, y, w, h))
@@ -97,7 +92,7 @@ class Lamppost:
 
     def get_dist_loc(self) -> tuple:
         """
-        Return location for when printing distance
+        Return location for printing distance on an image frame
 
         :return: x, y tuple
         :rtype: tuple
@@ -172,8 +167,11 @@ class Lamppost:
         :return: angle between camera in lamppost in radians in (x, y) format
         :rtype: tuple
         """
-        deg_alpha = bearing - ((self.x + (self.w * 0.5)) / 1920) * 90.9 - 45.45
-        deg_beta = (((1080 - self.y) + (self.h * 0.5)) / 1080) * 53.6 - 26.8
+        # deg_alpha = bearing - ((self.x + (self.w * 0.5)) / 1920) * 90.9 - 45.45
+        # deg_beta = (((1080 - self.y) + (self.h * 0.5)) / 1080) * 53.6 - 26.8
+        deg_alpha = (960 - (self.x + (self.w * 0.5)) / 1920) * 90.9
+        deg_beta = (540 - self.y + (self.h * 0.5)) / 540 * (26.8 * 1.5)
+
         alpha = deg_alpha * DEG2RAD
         beta = deg_beta * DEG2RAD
         self.rads.append((alpha, beta))
@@ -240,7 +238,7 @@ class Lamppost:
 
 class Lp_container:
     """
-    Container for the Lamppost objects.
+    Container for the currently tracked Lamppost objects in a frame.
     """
 
     def __init__(self):
@@ -251,7 +249,7 @@ class Lp_container:
         self.det_lps = set()
 
         # the amount of frames a lamppost is allowed to decay
-        self.max_decay = 12
+        self.max_decay = 24
 
     def add_lp(self, lp: Lamppost) -> None:
         """
@@ -262,19 +260,30 @@ class Lp_container:
 
         self.lps.append(lp)
 
+    def add_detected_lp(self, lp: Lamppost):
+        """
+        Adds a lamppost to the set of detected lampposts in a frame.
+        Should be used if the bounding box of a lamppost is updated
+        through the tracker but not the detector.
+
+        :param lp: lamppost to add to the set
+        """
+        self.det_lps.add(lp)
+
     def find_matching_lp(self, det_lp: tuple) -> Lamppost:
         """
         Finds the closest matching known lamppost to the newly
         detected lamppost according to their location on the
         image plane or None if there is no match.
 
-        :param det_lp: detected lamppost to check against know lampposts
+        :param det_lp: (x, y) coordinate of detected lamppost on the image plane
+        to check against know lampposts
         :return: closest matching lamppost object or None if none are found
         :rtype: Lamppost
         """
 
-        # the max distance in pixels for it to be a valid match, doesn't work
-        max_dist = 1000
+        # the max distance in pixels for it to be a valid match
+        max_dist = 200
 
         if len(self.lps) == 0:
             return None
@@ -282,7 +291,7 @@ class Lp_container:
         # generate a list with the coordinates of all know lampposts on the image plane
         coors = np.asarray([lp.get_coor() for lp in self.lps])
 
-        dists = np.sum((coors - np.asarray(det_lp)) ** 2, axis=1)
+        dists = np.sum(np.sqrt((coors - np.asarray(det_lp)) ** 2), axis=1)
 
         if np.amin(dists) < max_dist:
             lp = self.lps[np.argmin(dists)]
@@ -331,57 +340,63 @@ class Lp_container:
         self.lps.remove(lp)
 
 
-def demo():
-    lp_container = Lp_container()
-    cas = Cascader("models/cascade.xml")
-    id_gen = number_gen()
-    cap = cv.VideoCapture("input/Amsterdam/AMSTERDAM_OSV.mp4")
+class Cardinal:
+    """
+    Umbrella class for Lamppost and Lp_container classes
+    """
 
-    with open("input/Amsterdam/AMSTERDAM_OSV.gpx") as f:
-        gpx = gpxpy.parse(f)
+    def __init__(self, video_fn: str, gpx_fn: str, detector: FunctionType, data_df: pd.DataFrame = None):
+        """
+        constructor method
 
-    segments = gpx.tracks[0].segments[0]
-    gps_coords = pd.DataFrame([
-        {'lat': p.latitude,
-         'lon': p.longitude,
-         'ele': p.elevation,
-         'time': p.time} for p in segments.points])
+        :param video_fn: location of video file to analyse
+        :param gpx_fn: location of gpx file
+        :param detector: function to detect lampposts. it should be a function that takes a single frame as input
+        and returns a list of bounding boxes in the form of [[x, y, width, height]]
+        :param data_df: pandas dataframe containing three columns of: (lamppost_id, x-coordinate, y_coordinate)
+        """
 
-    # estimated height of the camera on the bike in meter
-    rdy = 1.2
-    fps = 24
-    start = 240
+        self.video = cv.VideoCapture(video_fn)
+        self.detector = detector
+        self.id_gen = number_gen()
+        self.data_df = data_df
 
-    lats = [gps_coords.lat[start], gps_coords.lat[start + 1]]
-    lons = [gps_coords.lon[start], gps_coords.lon[start + 1]]
+        with open(gpx_fn, "r") as file:
+            gpx = gpxpy.parse(file)
+        segments = gpx.tracks[0].segments[0]
+        self.gps_coords = pd.DataFrame([
+            {'lat': p.latitude,
+             'lon': p.longitude,
+             'ele': p.elevation,
+             'time': p.time} for p in segments.points])
 
-    cap.set(cv.CAP_PROP_POS_FRAMES, start * fps)
-    idx = start * fps
-    while True:
-        _, frame = cap.read()
-        rdx, rdz = wgs_to_rd(lats[idx % 24], lons[idx % 24])
+        self.container = Lp_container()
+        self.lampposts = []
 
-        if idx % 24 == 0:
-            lp_coors = cas.cascade_frame(frame)
-            # lp_coors = detect_frame(frame)
+    def analyze_frame(self, frame: np.ndarray, detect: bool, rdx: int, rdz: int, bearing: float):
+        """
+        Takes a single frame of video to detect lampposts in.
 
-            # interpolate the coordinates between two data-points
-            lats = np.linspace(gps_coords.lat[math.floor(idx / 24)], gps_coords.lat[math.floor(idx / 24 + 1)], num=24)
-            lons = np.linspace(gps_coords.lon[math.floor(idx / 24)], gps_coords.lon[math.floor(idx / 24 + 1)], num=24)
+        :param frame: frame of video as returned by opencv
+        :param detect: whether or not to query the detector
+        :param rdx: x rijksdriehoekscoordinaat
+        :param rdz: z rijksdriehoekcoordinaat
+        :param bearing: bearing of camera in degrees
+        """
 
-            p0 = wgs_to_rd(lats[0],  lons[0])
-            p1 = wgs_to_rd(lats[-1], lons[-1])
-            d = round(np.sqrt((p1[1] - p0[1])**2 + (p1[0] - p0[0])**2))
-            # print("m/s:", d)
-            bearing = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
-            bearing = bearing * RAD2DEG
+        # estimated height of the camera on the bike in meters, should be checked
+        rdy = 1.2
+
+        if detect:
+            lp_coors = self.detector(frame)
 
             for x, y, w, h in lp_coors:
-                match = lp_container.find_matching_lp((x, y))
+                match = self.container.find_matching_lp((x, y))
 
                 if not match:
-                    lp = Lamppost(x, y, w, h, next(id_gen), color_gen(), frame, (rdx, rdz, rdy), bearing)
-                    lp_container.add_lp(lp)
+                    lp = Lamppost(x, y, w, h, next(self.id_gen), color_gen(), frame, (rdx, rdz, rdy), bearing)
+                    self.container.add_lp(lp)
+                    self.add_lp(lp)
 
                 else:
                     match.update_bbox(x, y, w, h)
@@ -389,66 +404,247 @@ def demo():
                     match.get_angle(bearing)
 
         else:
-            for lp in lp_container.get_lps():
+            for lp in self.container.get_lps():
                 if not lp.tracker_update(frame):
-                    # lp_container.del_lp(lp)
                     lp.inc_decay()
 
                 else:
-                    lp_container.find_matching_lp(lp.get_coor())
+                    self.container.add_detected_lp(lp)
 
                 lp.add_loc((rdx, rdz, rdy))
                 lp.get_angle(bearing)
 
-        for lp in lp_container.get_lps():
-            p0, p1 = lp.get_bbox()
-            frame = cv.rectangle(frame, p0, p1, lp.get_color(), 4)
-            frame = cv.putText(frame,
-                               text=f"id:{lp.get_id()}",
-                               org=lp.get_coor(),
-                               fontFace=0,
-                               fontScale=1,
-                               color=lp.get_color(),
-                               thickness=3)
+    def analysis(self, video_start: int = 0, detect_rate: int = 12, debug: bool = True):
+        """
+        Method to handle the analysis on the video file by detecting and tracking
+        lampposts throughout each frame. These detected lampposts are stored in
+        self.lampposts
 
-            lp_rdx, lp_rdz, lp_rdy = lp.intersect()
+        :param video_start: at which second to start the video analysis
+        :param detect_rate: rate at which to query detector
+        :param debug: whether or not to show the results of the: detector, tracker
+        and distance estimation in an image window
+        """
+        # estimated height of the camera on the bike in meters, should be checked
+        rdy = 1.2
+        # frames per second of our camera
+        fps = 24
 
-            if np.isnan(lp_rdx):
-                continue
+        lats = [self.gps_coords.lat[video_start]]
+        lons = [self.gps_coords.lon[video_start]]
 
-            dist = round(np.sqrt((lp_rdx - rdx) ** 2 + (lp_rdz - rdz) ** 2)[0] / 10, 2)
-            frame = cv.putText(frame,
-                               text=f"dist: {dist}",
-                               org=lp.get_dist_loc(),
-                               fontFace=0,
-                               fontScale=1,
-                               color=lp.get_color(),
-                               thickness=3)
+        frame_idx = video_start * fps
+        self.video.set(cv.CAP_PROP_POS_FRAMES, frame_idx)
 
-        frame = cv.putText(frame,
-                           text=f"lat: {lats[idx % 24]}",
-                           org=(1500, 1040),
-                           fontFace=0,
-                           fontScale=1,
-                           color=(255, 255, 255),
-                           thickness=2)
-        frame = cv.putText(frame,
-                           text=f"lon: {lons[idx % 24]}",
-                           org=(1500, 1070),
-                           fontFace=0,
-                           fontScale=1,
-                           color=(255, 255, 255),
-                           thickness=2)
+        while True:
+            ret, frame = self.video.read()
 
-        cv.imshow("tracking", frame)
-        k = cv.waitKey(0)
+            if not ret:
+                print(f"Could not read video file beyond frame {frame_idx}")
+                break
 
-        if k == ord("q"):
-            cv.destroyWindow("tracking")
-            sys.exit(0)
+            # check to see if we started the video from a higher timestamp than 0
+            idx = 0 if video_start > 0 else frame_idx % detect_rate
+            rdx, rdz = wgs_to_rd(lats[idx], lons[idx])
 
-        lp_container.apply_decay()
-        idx += 1
+            if idx == 0:
+
+                # interpolate the coordinates between two gpx data-points
+                lats = np.linspace(self.gps_coords.lat[math.floor(frame_idx / fps)],
+                                   self.gps_coords.lat[math.floor(frame_idx / fps + 1)], num=detect_rate)
+                lons = np.linspace(self.gps_coords.lon[math.floor(frame_idx / fps)],
+                                   self.gps_coords.lon[math.floor(frame_idx / fps + 1)], num=detect_rate)
+
+                rdx, rdz = wgs_to_rd(lats[idx], lons[idx])
+                # calculate bearing in degrees
+                p0 = wgs_to_rd(lats[0], lons[0])
+                p1 = wgs_to_rd(lats[-1], lons[-1])
+                bearing = math.atan2(p1[1] - p0[1], p1[0] - p0[0]) * RAD2DEG
+
+                self.analyze_frame(frame, True, rdx, rdz, bearing)
+            else:
+                self.analyze_frame(frame, False, rdx, rdz, bearing)
+
+            if debug:
+                for lp in self.container.get_lps():
+                    p0, p1 = lp.get_bbox()
+                    frame = cv.rectangle(frame, p0, p1, lp.get_color(), 4)
+                    frame = cv.putText(frame,
+                                       text=f"id:{lp.get_id()}",
+                                       org=lp.get_coor(),
+                                       fontFace=0,
+                                       fontScale=1,
+                                       color=lp.get_color(),
+                                       thickness=3)
+
+                    lp_rdx, lp_rdz, lp_rdy = lp.intersect()
+
+                    if np.isnan(lp_rdx):
+                        continue
+
+                    lp_rdy = np.clip(lp_rdy, 2, 8)
+                    dist = round(np.sqrt((lp_rdx - rdx) ** 2 + (lp_rdz - rdz) ** 2 + (lp_rdy - rdy) ** 2)[0] / 10, 2)
+                    frame = cv.putText(frame,
+                                       text=f"dist: {dist}",
+                                       org=lp.get_dist_loc(),
+                                       fontFace=0,
+                                       fontScale=1,
+                                       color=lp.get_color(),
+                                       thickness=3)
+
+                frame = cv.putText(frame,
+                                   text=f"lat: {lats[idx % detect_rate]}",
+                                   org=(1500, 1040),
+                                   fontFace=0,
+                                   fontScale=1,
+                                   color=(255, 255, 255),
+                                   thickness=2)
+                frame = cv.putText(frame,
+                                   text=f"lon: {lons[idx % detect_rate]}",
+                                   org=(1500, 1070),
+                                   fontFace=0,
+                                   fontScale=1,
+                                   color=(255, 255, 255),
+                                   thickness=2)
+
+                cv.imshow("Debug window", frame)
+                k = cv.waitKey(1)
+
+                if k == ord("q"):
+                    cv.destroyWindow("Debug window")
+                    sys.exit(0)
+
+            video_start = 0
+            frame_idx += 1
+            self.container.apply_decay()
+
+    def add_lp(self, lp: Lamppost):
+        """
+        Adds a lamppost to self.lampposts
+
+        :param lp: lamppost object to store
+        """
+        self.lampposts.append(lp)
+
+    def get_lps(self) -> list:
+        """
+        Returns the list of lamppost
+
+        :return: list with all detected lampposts in the video
+        :rtype list:
+        """
+        return self.lampposts
+
+    def get_relevant_lps(self):
+        """
+        Reduces the size of the pandas dataframe containing all the lampposts and
+        restricts it to the lampposts who are situated along the route of the
+        cyclist.
+        """
+        print("fetching data...")
+        rds_route = np.array([wgs_to_rd(gps['lat'], gps['lon']) for _, gps in self.gps_coords[['lat', 'lon']].iterrows()], dtype=np.int64)
+        rds_data = self.data_df[['X', 'Y']].to_numpy()
+        # remove all rows containing a nan
+        rds_data = rds_data[~np.isnan(rds_data).any(axis=1), :]
+        print("computing distances...")
+        dist_matrix = cdist(rds_data, rds_route, 'euclidean')
+        # get unique indices of which coordinates follow the condition
+        indices = np.unique(np.argwhere(dist_matrix < 10)[:, 0])
+        # remove indices of lampposts that are too far away
+        self.data_df = self.data_df.iloc[indices]
+
+    def plot_lampposts(self):
+        """
+        This plots the detected lampposts and know lampposts
+        (if provided during initialization) on a Mapbox map.
+        """
+
+        ids = []
+        lats_route = []
+        lons_route = []
+
+        lats_data = []
+        lons_data = []
+
+        pk = "pk.eyJ1IjoibWFlZ29yaSIsImEiOiJja3NybzN2eWowaGJ2MnZwbmp3MTd5NDhlIn0.jeweG30DDP_Fzj-KRJ7OiQ"
+
+        # get lamppost locations from provided by Amsterdam
+        if isinstance(self.data_df, pd.DataFrame):
+            for idx in range(len(self.data_df)):
+                lp_id, x, y = self.data_df.iloc[idx]
+                lat, lon = rd_to_wgs(x, y)
+
+                ids.append(lp_id)
+                lats_data.append(lat)
+                lons_data.append(lon)
+
+        # get lamppost locations from detections
+        for lp in self.get_lps():
+            rdx, rdz, _ = lp.intersect()
+            lat, lon = rd_to_wgs(rdx, rdz)
+
+            lats_route.append(lat)
+            lons_route.append(lon)
+
+        print(lats_route)
+        print(lons_route)
+
+        fig = go.Figure(go.Scattermapbox(
+            lat=lats_data,
+            lon=lons_data,
+            mode='markers',
+            marker=go.scattermapbox.Marker(
+                size=9
+            ),
+            hoverinfo=['lat', 'lon', 'text'],
+            text=ids
+        ))
+
+        fig.add_trace(go.Scattermapbox(
+            lat=lats_route,
+            lon=lons_route,
+            mode='markers',
+            marker=go.scattermapbox.Marker(
+                size=9,
+                color='red'
+            )
+        ))
+
+        fig.update_layout(autosize=True,
+                          mapbox_style="open-street-map",
+                          hovermode='closest',
+                          mapbox=dict(
+                              accesstoken=pk,
+                              bearing=0,
+                              center=go.layout.mapbox.Center(
+                                  lat=52.377956,
+                                  lon=4.897070
+                              ),
+                              pitch=0,
+                              zoom=10
+                          )
+                          )
+
+        fig.show()
+
+
+def demo():
+    cas = Cascader("models/cascade.xml")
+    video_fn = "input/Amsterdam/AMSTERDAM_OSV.mp4"
+    gpx_fn = "input/Amsterdam/AMSTERDAM_OSV.gpx"
+    exc_fn = "input/Amsterdam/Bijlage 5 Assetoverzicht OVL te inspecteren lichtpunten.xlsx"
+    detector = cas.cascade_frame
+
+    data_df = pd.read_excel(exc_fn)[["Identificatie", "X", "Y"]]
+
+    cardinal = Cardinal(video_fn, gpx_fn, detector, data_df)
+    cardinal.analysis(debug=False)
+    cardinal.get_relevant_lps()
+    cardinal.plot_lampposts()
+    # cardinal.analysis(video_start=0, debug=False)
+    #
+    # for lp in cardinal.get_lps():
+    #     print(lp.get_id())
 
 
 if __name__ == "__main__":

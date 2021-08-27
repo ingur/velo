@@ -1,10 +1,12 @@
 from typing import Iterator
+import cv2 as cv
 import numpy as np
 
 X0 = 155000
 Y0 = 463000
 PHI0 = 52.15517440
 LAM0 = 5.38720621
+
 
 def number_gen() -> Iterator[int]:
     """
@@ -118,6 +120,55 @@ def wgs_to_rd(phi, lam):
     return [X, Y]
 
 
+def detect_gray_frame(frame):
+    img = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+    img = cv.medianBlur(img, 5)
+
+    perc = 0.004
+    hist = cv.calcHist([img], [0], None, [256], [0, 256]).flatten()
+
+    total = img.shape[0] * img.shape[1]
+    target = perc * total
+
+    summed = 0
+    thresh = 0
+    for i in range(255, 0, -1):
+        summed += int(hist[i])
+        if summed >= target:
+            thresh = i
+            break
+
+    ret = cv.threshold(img, thresh < 255 and thresh or 254, 0, cv.THRESH_TOZERO)[1]
+    ret = ret[0:300]
+    cv.imshow("poly", ret)
+    cv.waitKey(1)
+
+    contours = cv.findContours(ret, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    contours = contours[0] if len(contours) == 2 else contours[1]
+    # contours = sorted(contours, key=cv.contourArea, reverse=True)
+
+    contours_poly = [None] * len(contours)
+    boundRect = [None] * len(contours)
+    centers = [None] * len(contours)
+    radius = [None] * len(contours)
+
+    detected = []
+    ret = cv.cvtColor(ret, cv.COLOR_GRAY2RGB)
+    for i, c in enumerate(contours):
+        contours_poly[i] = cv.approxPolyDP(c, 0.03 * cv.arcLength(c, True), True)
+        area = cv.contourArea(c)
+        if len(contours_poly) > 10 and area > 1000:
+            ret = cv.polylines(ret, [contours_poly[i]], True, (0, 0, 255))
+            detected.append(cv.boundingRect(contours_poly[i]))
+        # centers[i], radius[i] = cv.minEnclosingCircle(contours_poly[i])
+        # print(approx)
+        # area = cv.contourArea(c)
+    cv.imshow("poly", ret)
+    cv.waitKey(1)
+
+    return detected
+
+
 def detect_frame(im):
     img = cv.cvtColor(im, cv.COLOR_BGR2GRAY)
     img = cv.medianBlur(img, 5)
@@ -125,7 +176,7 @@ def detect_frame(im):
     img = cv.erode(img, kernel, iterations=3)
     img = cv.dilate(img, kernel, iterations=3)
 
-    perc = 0.01
+    perc = 0.015
     hist = cv.calcHist([img[:324]], [0], None, [256], [0, 256]).flatten()
 
     total = img.shape[0] * img.shape[1]
@@ -140,6 +191,8 @@ def detect_frame(im):
             break
 
     ret = cv.threshold(img, thresh < 255 and thresh or 254, 0, cv.THRESH_TOZERO)[1]
+    cv.imshow("poly", ret)
+    cv.waitKey(1)
 
     contours = cv.findContours(ret[:, :960], cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
     contours = contours[0] if len(contours) == 2 else contours[1]
@@ -149,9 +202,21 @@ def detect_frame(im):
     boundRect = [None] * len(contours)
     centers = [None] * len(contours)
     radius = [None] * len(contours)
-    for i, c in enumerate(contours):
-        contours_poly[i] = cv.approxPolyDP(c, 3, True)
-        boundRect[i] = cv.boundingRect(contours_poly[i])
-        centers[i], radius[i] = cv.minEnclosingCircle(contours_poly[i])
 
-    return boundRect
+    detected = []
+
+    for i, c in enumerate(contours):
+        contours_poly[i] = cv.approxPolyDP(c, 0.03 * cv.arcLength(c, True), True)
+        if len(contours_poly[i]) > 2:
+            detected.append(cv.boundingRect(contours_poly[i]))
+
+        # im = cv.polylines(im, [contours_poly[i]], True, (0, 255, 255))
+        # if len(approx) > 5:
+        #     detected.append(boundRect[i])
+        # centers[i], radius[i] = cv.minEnclosingCircle(contours_poly[i])
+        # approx = cv.approxPolyDP(c, 0.0001*cv.arcLength(c, True), True)
+        # print(approx)
+        # area = cv.contourArea(c)
+
+    return detected
+
