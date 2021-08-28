@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from scipy.spatial.distance import cdist
 
 from lp_cascade import Cascader
-from utils import number_gen, color_gen, wgs_to_rd, rd_to_wgs
+from utils import number_gen, color_gen, wgs_to_rd, rd_to_wgs, detect_gray_frame
 
 DEG2RAD = math.pi / 180
 RAD2DEG = 180 / math.pi
@@ -583,11 +583,8 @@ class Cardinal:
             rdx, rdz, _ = lp.intersect()
             lat, lon = rd_to_wgs(rdx, rdz)
 
-            lats_route.append(lat)
-            lons_route.append(lon)
-
-        print(lats_route)
-        print(lons_route)
+            lats_route.append(lat[0])
+            lons_route.append(lon[0])
 
         fig = go.Figure(go.Scattermapbox(
             lat=lats_data,
@@ -635,10 +632,10 @@ def demo():
     exc_fn = "input/Amsterdam/Bijlage 5 Assetoverzicht OVL te inspecteren lichtpunten.xlsx"
     detector = cas.cascade_frame
 
-    data_df = pd.read_excel(exc_fn)[["Identificatie", "X", "Y"]]
+    # data_df = pd.read_excel(exc_fn)[["Identificatie", "X", "Y"]]
 
-    cardinal = Cardinal(video_fn, gpx_fn, detector, data_df)
-    cardinal.analysis(debug=False)
+    cardinal = Cardinal(video_fn, gpx_fn, detector)
+    cardinal.analysis(video_start=1000, debug=True)
     cardinal.get_relevant_lps()
     cardinal.plot_lampposts()
     # cardinal.analysis(video_start=0, debug=False)
