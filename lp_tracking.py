@@ -15,6 +15,43 @@ from utils import number_gen, color_gen, wgs_to_rd, rd_to_wgs, detect_gray_frame
 DEG2RAD = math.pi / 180
 RAD2DEG = 180 / math.pi
 
+# default parameters for the CSRT tracker from opencv
+default_params = {
+    'padding': 3.,
+    'template_size': 200.,
+    'gsl_sigma': 1.,
+    'hog_orientations': 9.,
+    'num_hog_channels_used': 18,
+    'hog_clip': 2.0000000298023224e-01,
+    'use_hog': 1,
+    'use_color_names': 1,
+    'use_gray': 1,
+    'use_rgb': 0,
+    'window_function': 'hann',
+    'kaiser_alpha': 3.7500000000000000e+00,
+    'cheb_attenuation': 45.,
+    'filter_lr': 1.9999999552965164e-02,
+    'admm_iterations': 4,
+    'number_of_scales': 100,
+    'scale_sigma_factor': 0.25,
+    'scale_model_max_area': 512.,
+    'scale_lr': 2.5000000372529030e-02,
+    'scale_step': 1.02,
+    'use_channel_weights': 1,
+    'weights_lr': 1.9999999552965164e-02,
+    'use_segmentation': 1,
+    'histogram_bins': 16,
+    'background_ratio': 2,
+    'histogram_lr': 3.9999999105930328e-02,
+    'psr_threshold': 3.5000000149011612e-02,
+}
+
+param_handler = cv.TrackerCSRT_Params()
+# threshold for determining when the target is lost
+params = {'psr_threshold': 1e-1}
+for key, val in params.items():
+    setattr(param_handler, key, val)
+
 
 class Lamppost:
     """
@@ -50,8 +87,10 @@ class Lamppost:
         # angles between camera and lamppost during detection
         self.rads = []
         self.get_angle(bearing)
+        # final location predicted
+        self.location = None
 
-        self.tracker = cv.TrackerKCF_create()
+        self.tracker = cv.TrackerCSRT_create(param_handler)
         self.tracker.init(frame, (x, y, w, h))
 
     def update_bbox(self, x: int, y: int, w: int, h: int):
@@ -157,7 +196,7 @@ class Lamppost:
             self.update_bbox(x, y, w, h)
         return success
 
-    def get_angle(self) -> tuple:
+    def get_angle(self, bearing) -> tuple:
         """
         Returns the angle between camera and lamppost in radians according to
         the x and y coordinates  of the bounding box.
@@ -216,8 +255,8 @@ class Lamppost:
 
         ls = np.linalg.lstsq(R, q, rcond=None)
         p = ls[0]
-        # self.point_line_distance(p)
-        # print(p)
+
+        self.location = p
         return p
 
     def point_line_distance(self, point):
@@ -249,7 +288,7 @@ class Lp_container:
         self.det_lps = set()
 
         # the amount of frames a lamppost is allowed to decay
-        self.max_decay = 24
+        self.max_decay = 12
 
     def add_lp(self, lp: Lamppost) -> None:
         """
@@ -399,7 +438,6 @@ class Cardinal:
                     self.add_lp(lp)
 
                 else:
-                    match.update_bbox(x, y, w, h)
                     match.add_loc((rdx, rdz, rdy))
                     match.get_angle(bearing)
 
@@ -410,9 +448,8 @@ class Cardinal:
 
                 else:
                     self.container.add_detected_lp(lp)
-
-                lp.add_loc((rdx, rdz, rdy))
-                lp.get_angle(bearing)
+                    lp.add_loc((rdx, rdz, rdy))
+                    lp.get_angle(bearing)
 
     def analysis(self, video_start: int = 0, detect_rate: int = 12, debug: bool = True):
         """
@@ -425,6 +462,7 @@ class Cardinal:
         :param debug: whether or not to show the results of the: detector, tracker
         and distance estimation in an image window
         """
+        print("Starting video analysis...")
         # estimated height of the camera on the bike in meters, should be checked
         rdy = 1.2
         # frames per second of our camera
@@ -434,6 +472,7 @@ class Cardinal:
         lons = [self.gps_coords.lon[video_start]]
 
         frame_idx = video_start * fps
+        total_frames = int(self.video.get(cv.CAP_PROP_FRAME_COUNT))
         self.video.set(cv.CAP_PROP_POS_FRAMES, frame_idx)
 
         while True:
@@ -517,6 +556,8 @@ class Cardinal:
             video_start = 0
             frame_idx += 1
             self.container.apply_decay()
+            print(f"Analysed {frame_idx} / {total_frames} frames", end='\r')
+        print("Video analysed")
 
     def add_lp(self, lp: Lamppost):
         """
@@ -552,6 +593,48 @@ class Cardinal:
         indices = np.unique(np.argwhere(dist_matrix < 10)[:, 0])
         # remove indices of lampposts that are too far away
         self.data_df = self.data_df.iloc[indices]
+
+    def delete_redundant_lps(self):
+        """
+        Lampposts who are too close to each other are combined
+        by averaging their coordinates.
+        """
+
+        # distance in meters for when two lampposts should be considered as the same
+        min_dist = 2
+
+        # get the first 2 columns of the lampposts coordinates (rdx, rdz)
+        coors = np.vstack([lp.intersect().reshape(3) for lp in self.lampposts])[:, :2]
+        # compute the inter-lamppost distance
+        dist_mat = cdist(coors, coors, 'euclidean')
+        indices = np.argwhere(dist_mat < min_dist)
+
+        # key is the index of the lps and its values are the indices of lps close to it
+        neighboring_lps = dict()
+        # set of all lps that will be merged into other lps
+        redundant_lps = set()
+
+        for lp1, lp2 in indices:
+            if lp1 in redundant_lps:
+                continue
+
+            if lp1 in neighboring_lps:
+                neighboring_lps[lp1].append(lp2)
+            else:
+                neighboring_lps[lp1] = [lp2]
+
+                redundant_lps.add(lp2)
+
+        print(neighboring_lps)
+        print(len(self.lampposts))
+        # recalculate locations
+        for lp, red_lps in neighboring_lps.items():
+            mean_loc = np.mean(coors[red_lps])
+            self.lampposts[lp].location = mean_loc
+
+        # remove redundant lampposts from memory
+        for idx in sorted(redundant_lps, reverse=True):
+            del self.lampposts[idx]
 
     def plot_lampposts(self):
         """
@@ -632,11 +715,12 @@ def demo():
     exc_fn = "input/Amsterdam/Bijlage 5 Assetoverzicht OVL te inspecteren lichtpunten.xlsx"
     detector = cas.cascade_frame
 
-    # data_df = pd.read_excel(exc_fn)[["Identificatie", "X", "Y"]]
+    data_df = pd.read_excel(exc_fn)[["Identificatie", "X", "Y"]]
 
-    cardinal = Cardinal(video_fn, gpx_fn, detector)
-    cardinal.analysis(video_start=1000, debug=True)
+    cardinal = Cardinal(video_fn, gpx_fn, detector, data_df)
+    cardinal.analysis(video_start=0, debug=False)
     cardinal.get_relevant_lps()
+    cardinal.delete_redundant_lps()
     cardinal.plot_lampposts()
     # cardinal.analysis(video_start=0, debug=False)
     #
