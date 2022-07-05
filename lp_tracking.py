@@ -718,7 +718,7 @@ def demo():
     data_df = pd.read_excel(exc_fn)[["Identificatie", "X", "Y"]]
 
     cardinal = Cardinal(video_fn, gpx_fn, detector, data_df)
-    cardinal.analysis(video_start=0, debug=False)
+    cardinal.analysis(video_start=0, debug=True)
     cardinal.get_relevant_lps()
     cardinal.delete_redundant_lps()
     cardinal.plot_lampposts()
