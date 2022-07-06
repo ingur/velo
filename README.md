@@ -16,8 +16,7 @@ This is the default project structure handled by our code.
 │   ├── City
 │   │   ├── video_file.mp4
 │   │   ├── lamppost_data.xlsx
-├── output
-│   ├── City
-│   │   ├── frames
+├── models
+│   ├── cascade.xml
 ```
 ___
