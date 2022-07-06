@@ -271,8 +271,7 @@ class Lamppost:
             t = np.dot(v, d.T)
             P = P0[i] + np.dot(t, d.T)
             dist += np.linalg.norm(P - point)
-        print(dist / len(P0))
-        print()
+
 
 
 class Lp_container:
